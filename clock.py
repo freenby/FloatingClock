@@ -5,6 +5,11 @@ import pyttsx3
 import threading
 import time
 import sys
+# 添加系统托盘需要的库
+from PIL import Image, ImageTk, ImageDraw
+import pystray
+import io
+import os
 
 class FloatingClock:
     def __init__(self):
@@ -16,8 +21,11 @@ class FloatingClock:
             x = (screen_width - 200) // 2
             y = (screen_height - 50) // 2
             
-            self.root.overrideredirect(True)
+            # 隐藏任务栏图标
+            self.root.attributes('-alpha', 1.0)
             self.root.attributes('-topmost', True)
+            self.root.wm_attributes('-toolwindow', True)  # 添加这行来隐藏任务栏图标
+            self.root.overrideredirect(True)
             
             # 设置窗口大小和位置
             self.root.configure(bg='blue')
@@ -109,7 +117,7 @@ class FloatingClock:
             
             # 添加分隔线和退出选项
             self.menu.add_separator()
-            self.menu.add_command(label='退出', command=self.root.quit)
+            self.menu.add_command(label='退出', command=self.quit_app)
             
             # 保存当前的背景色和文字色
             self.bg_color = 'blue'
@@ -124,6 +132,12 @@ class FloatingClock:
             
             # 启动时钟更新
             self.update_clock()
+            
+            # 初始化系统托盘图标
+            self.init_system_tray()
+            
+            # 绑定窗口最小化事件
+            self.root.bind('<Unmap>', self.minimize_to_tray)
             
             print("时钟初始化完成")
             
@@ -162,10 +176,14 @@ class FloatingClock:
     
     def voice_time_check(self):
         """语音报时检查线程"""
-        last_announce = None  # 记录上次报时的时间
+        last_announce = None
         
         while True:
             try:
+                # 检查程序是否正在退出
+                if not hasattr(self, 'root') or not self.root.winfo_exists():
+                    break
+                
                 now = datetime.now()
                 current_mode = self.voice_mode.get()
                 
@@ -196,8 +214,11 @@ class FloatingClock:
                 time.sleep(1)  # 每秒检查一次
                 
             except Exception as e:
-                print(f"语音报时错误: {e}")
-                time.sleep(5)  # 发生错误时等待5秒再重试
+                if hasattr(self, 'root') and self.root.winfo_exists():
+                    print(f"语音报时错误: {e}")
+                    time.sleep(5)
+                else:
+                    break
 
     def set_transparency(self, alpha):
         """设置窗口透明度"""
@@ -246,12 +267,95 @@ class FloatingClock:
         except Exception as e:
             print(f"选择数字颜色错误: {e}")
 
+    def init_system_tray(self):
+        """初始化系统托盘图标"""
+        try:
+            # 创建系统托盘图标
+            if not hasattr(self, 'icon_image'):
+                # 使用 create_icon.py 中的代码创建图标
+                size = 64  # 减小图标尺寸，使其更适合系统托盘
+                image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(image)
+                circle_bbox = (4, 4, size-4, size-4)
+                draw.ellipse(circle_bbox, fill='blue')
+                center = size // 2
+                draw.line([(center, center), (center, center-20)], fill='white', width=3)
+                draw.line([(center, center), (center+15, center)], fill='white', width=2)
+                
+                # 保存图标图像
+                self.icon_image = image.resize((16, 16), Image.Resampling.LANCZOS)  # 调整为标准系统托盘大小
+
+            # 创建系统托盘菜单
+            menu = (
+                pystray.MenuItem("显示", self.show_window),
+                pystray.MenuItem("退出", self.quit_app)
+            )
+            
+            # 创建系统托盘图标
+            self.tray_icon = pystray.Icon(
+                "FloatingClock",
+                self.icon_image,
+                "悬浮时钟",
+                menu
+            )
+            
+            # 直接运行系统托盘图标
+            self.tray_icon.run_detached()
+            
+        except Exception as e:
+            print(f"初始化系统托盘错误: {e}")
+
+    def minimize_to_tray(self, event=None):
+        """最小化到系统托盘"""
+        try:
+            self.root.withdraw()  # 隐藏主窗口
+            if hasattr(self, 'tray_icon') and self.tray_icon is not None:
+                self.tray_icon.visible = True
+        except Exception as e:
+            print(f"最小化到托盘错误: {e}")
+
+    def show_window(self, icon=None, item=None):
+        """显示主窗口"""
+        try:
+            self.root.deiconify()  # 显示主窗口
+            self.root.lift()  # 将窗口提升到顶层
+            if hasattr(self, 'tray_icon') and self.tray_icon is not None:
+                self.tray_icon.visible = True
+        except Exception as e:
+            print(f"显示窗口错误: {e}")
+
+    def quit_app(self, icon=None, item=None):
+        """退出应用程序"""
+        try:
+            # 停止语音报时线程
+            if hasattr(self, 'voice_thread'):
+                self.voice_thread._stop()
+            
+            # 停止系统托盘图标
+            if hasattr(self, 'tray_icon') and self.tray_icon is not None:
+                self.tray_icon.visible = False
+                self.tray_icon.stop()
+            
+            # 销毁主窗口
+            if hasattr(self, 'root'):
+                self.root.quit()
+                self.root.destroy()
+            
+            # 强制退出程序
+            os._exit(0)
+        except Exception as e:
+            print(f"退出程序错误: {e}")
+            os._exit(1)
+
     def run(self):
         try:
             print("开始运行时钟...")
+            self.root.protocol('WM_DELETE_WINDOW', self.minimize_to_tray)
             self.root.mainloop()
         except Exception as e:
             print(f"运行错误: {e}")
+        finally:
+            self.quit_app()  # 确保程序正确退出
 
 if __name__ == '__main__':
     try:
